@@ -1,0 +1,202 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+# (c) 2013, Christian Berendt <berendt@b1-systems.de>
+#
+# based on keystone_user by Lorin Hochstein and on quantum_* by Benno Joy
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+DOCUMENTATION = '''
+---
+module: keystone_endpoint
+short_description: Add/Remove a endpoint on the OpenStack Identity Service (Keystone)
+description:
+   - Add/Remove a endpoint on the OpenStack Identity Service (Keystone).
+options:
+   login_username:
+     description:
+        - login username to authenticate to keystone
+     required: true
+     default: admin
+   login_password:
+     description:
+        - password of login user
+     required: true
+     default: 'password'
+   login_tenant_name:
+     description:
+        - the tenant name of the login user
+     required: true
+     default: 'admin'
+   auth_url:
+     description:
+        - the keystone url for authentication
+     required: false
+     default: 'http://127.0.0.1:5000/v2.0/'
+   region_name:
+     description:
+        - name of the region
+     required: false
+     default: None
+   name:
+     description:
+        - the name of the endpoint that should be added/removed
+     required: true
+     default: None
+   service:
+     description:
+        - the name of the service the endpoint should be/is assigned to
+     required: true
+     default: None
+   region:
+     description:
+        - the name of the region the endpoint should be/is assigned to
+     required: false
+     default: None
+   publicurl:
+     description:
+        - the Public URL of the endpoint
+     required: true
+     default: None
+   adminurl:
+     description:
+        - the Admin URL of the endpoint
+     required: false
+     default: None
+   internalurl:
+     description:
+        - the Internal URL of the endpoint
+     required: false
+     default: None
+   state:
+     description:
+        - indicate desired state of the resource
+     choices: ['present', 'absent']
+     default: present
+requirements: [ "python-keystoneclient" ]
+'''
+
+EXAMPLES = '''
+- keystone_endpoint: state=present login_username=admin login_password=password
+                     login_tenantname=admin auth_url=http://keystone:5000/v2.0
+                     service=nova publicurl='http://localhost:8774/v2/%(tenant_id)s'
+'''
+
+try:
+    from keystoneclient.v2_0 import client
+except ImportError:
+    print("failed=True msg='python-keystoneclient is required'")
+
+def _get_ksclient(module, kwargs):
+    try:
+        if kwargs.get('login_token'):
+            ksclient = client.Client(token=kwargs.get('login_token'),
+                                     endpoint=kwargs.get('auth_url'))
+        else:
+            ksclient = client.Client(username=kwargs.get('login_username'),
+                                      password=kwargs.get('login_password'),
+                                      tenant_name=kwargs.get('login_tenantname'),
+                                      auth_url=kwargs.get('auth_url'))
+    except Exception as e:
+        module.fail_json(msg = "error authenticating to the keystone: %s" %e.message)
+
+    return ksclient
+
+def _get_service(ksclient, module):
+    services = [x for x in ksclient.services.list() if x.name == module.params['service']]
+    count = len(services)
+    if count == 0:
+        module.fail_json( msg = " No service with name %s found " % module.params['service'])
+    elif count > 1:
+        module.fail_json( msg = " %d services with name %s found " % (count, module.params['service']))
+    else:
+        return services[0]
+
+def _get_endpoint(module, ksclient):
+    service = _get_service(ksclient, module)
+    endpoints = [x for x in ksclient.endpoints.list() if (x.service_id == service.id and
+                                                          x.publicurl == module.params['publicurl'])]
+    count = len(endpoints)
+    if count == 0:
+        return None
+    elif count > 1:
+        module.fail_json( msg = " %d endpoints for service %s with publicurl %s found " % (count, service.id, module.params['publicurl']))
+    else:
+        return endpoints[0]
+
+def _delete_endpoint(module, ksclient):
+    try:
+        endpoint = _get_endpoint(module, ksclient)
+        ksclient.endpoints.delete(endpoint.id)
+    except Exception as e:
+        module.fail_json( msg = "Error in deleting endpoint: %s" % str(e))
+
+    return True
+
+def _create_endpoint(module, ksclient):
+    try:
+        service = _get_service(ksclient, module)
+        endpoint = ksclient.endpoints.create(region=module.params['region'],
+                                             service_id=service.id,
+                                             internalurl=module.params['internalurl'],
+                                             publicurl=module.params['publicurl'],
+                                             adminurl=module.params['adminurl'])
+    except Exception as e:
+        module.fail_json(msg = "Failure in creating endpoint: %s" % str(e))
+
+    return endpoint
+
+
+def main():
+
+    module = AnsibleModule(
+        argument_spec = dict(
+            login_username          = dict(default=None),
+            login_password          = dict(default=None),
+            login_token             = dict(default=None),
+            login_tenantname        = dict(default=None),
+            auth_url                = dict(default='http://127.0.0.1:5000/v2.0/'),
+            region_name             = dict(default=None),
+            service                 = dict(required=True),
+            region                  = dict(required=False),
+            publicurl               = dict(required=True),
+            internalurl             = dict(required=False),
+            adminurl                = dict(required=False),
+            state                   = dict(default='present', choices=['absent', 'present']),
+        )
+    )
+
+    ksclient = _get_ksclient(module, module.params)
+
+    if module.params['state'] == 'present':
+        endpoint = _get_endpoint(module, ksclient)
+
+        if not endpoint:
+            endpoint = _create_endpoint(module, ksclient)
+            module.exit_json(changed = True, result = "Created" , id = endpoint.id)
+        else:
+            module.exit_json(changed = False, result = "success" , id = endpoint.id)
+    else:
+        endpoint = _get_endpoint(module, ksclient)
+        if not endpoint:
+            module.exit_json(changed = False, result = "success")
+        else:
+            _delete_endpoint(module, ksclient)
+            module.exit_json(changed = True, result = "deleted")
+
+
+# this is magic, see lib/ansible/module_common.py
+#<<INCLUDE_ANSIBLE_MODULE_COMMON>>
+main()
