@@ -62,7 +62,7 @@ options:
      default: None
    description:
      description:
-        - a description of the service that should be added/removed
+        - a description of the service that should be added
      required: false
      default: None
    state:
