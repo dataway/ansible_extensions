@@ -1,0 +1,156 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+# (c) 2012, Jan-Piet Mens <jpmens () gmail.com>
+# (c) 2013, Christian Berendt <berendt@b1-systems.de>
+#
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+DOCUMENTATION = '''
+---
+module: ini_file
+short_description: Tweak settings in INI files
+description:
+  - Manage (add, remove, change) individual settings in an INI-style file without having
+    to manage the file as a whole with, say, M(template) or M(assemble). Adds missing
+    sections if they don't exist.
+version_added: "0.9"
+options:
+  dest:
+    description:
+      - Path to the INI-style file; this file is created if required
+    required: true
+    default: null
+  section:
+    description:
+      - Section name in INI file. This is added if C(state=present) automatically when
+        a single value is being set.
+    required: true
+    default: null
+  option:
+    description:
+      - if set (required for changing a I(value)), this is the name of the option.
+      - May be omitted if adding/removing a whole I(section).
+    required: false
+    default: null
+  value:
+    description:
+     - the string value to be associated with an I(option). May be omitted when removing an I(option).
+    required: false
+    default: null
+  backup:
+    description:
+      - Create a backup file including the timestamp information so you can get
+        the original file back if you somehow clobbered it incorrectly.
+    required: false
+    default: "no"
+    choices: [ "yes", "no" ]
+  others:
+     description:
+       - all arguments accepted by the M(file) module also work here
+     required: false
+notes:
+   - While it is possible to add an I(option) without specifying a I(value), this makes
+     no sense.
+requirements: [ configobj ]
+author: Jan-Piet Mens
+'''
+
+EXAMPLES = '''
+# Ensure "fav=lemonade is in section "[drinks]" in specified file
+- ini_file: dest=/etc/conf section=drinks option=fav value=lemonade mode=0600 backup=yes
+
+- ini_file: dest=/etc/anotherconf
+            section=drinks
+            option=temperature
+            value=cold
+            backup=yes
+'''
+
+from configobj import ConfigObj, ConfigObjError
+
+def do_ini(module):
+
+    changed = False
+
+    try:
+        config = ConfigObj(module.params['dest'], encoding='UTF8')
+    except (IOError, ConfigObjError) as e:
+        module.fail_json(msg = " Error opening file %s: %s " % (module.params['dest'], str(e)))
+
+    if module.params['state'] == 'absent':
+        if (module.params['option'] is None and
+            module.params['value'] is None and
+            config.has_key(module.params['section'])):
+            del config[module.params['section']]
+            changed = True
+        elif (module.params['option'] is not None and
+              config.has_key(module.params['section']) and
+              config[module.params['section']].has_key(module.params['option'])):
+            del config[module.params['section']][module.params['option']]
+            changed = True
+
+    if module.params['state'] == 'present':
+        if not config.has_key(module.params['section']):
+            config[module.params['section']] = {}
+            changed = True
+
+        if (module.params['option'] is not None and
+            not config[module.params['section']].has_key(module.params['option'])):
+            config[module.params['section']][module.params['option']] = None
+            changed = True
+
+        if (module.params['value'] is not None and
+            config[module.params['section']].has_key(module.params['option'])):
+            if (str(config[module.params['section']][module.params['option']]) != str(module.params['value'])):
+                config[module.params['section']][module.params['option']] = str(module.params['value'])
+                changed = True
+
+    if changed:
+        if module.params['backup']:
+            module.backup_local(module.params['dest'])
+
+        try:
+            config.write()
+        except (IOError, ConfigObjError) as e:
+            module.fail_json(msg = " Error writing file %s: %s " % (module.params['dest'], str(e)))
+
+    return changed
+
+
+def main():
+
+    module = AnsibleModule(
+        argument_spec = dict(
+            dest = dict(required=True),
+            section = dict(required=True),
+            option = dict(required=False),
+            value = dict(required=False),
+            backup = dict(default='no', type='bool'),
+            state = dict(default='present', choices=['present', 'absent'])
+        ),
+        add_file_common_args = True
+    )
+
+    changed = do_ini(module)
+    file_args = module.load_file_common_arguments(module.params)
+    changed = module.set_file_attributes_if_different(file_args, changed)
+    module.exit_json(dest=module.params['dest'], changed=changed, msg="OK")
+
+# this is magic, see lib/ansible/module_common.py
+#<<INCLUDE_ANSIBLE_MODULE_COMMON>>
+main()
